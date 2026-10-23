@@ -139,7 +139,7 @@ def ang_between(v1, v2):
     for i in range(v1.shape[0]):
         for j in range(v1.shape[1]):
             frac = np.dot(v1[i, j], v2[i, j]) / (v1a[i, j] * v2a[i, j])
-            out[i, j] = np.degrees(np.arccos(frac))
+            out[i, j] = np.degrees(np.arccos(np.clip(frac, -1.0, 1.0)))
 
     return out
 
@@ -218,8 +218,11 @@ def calc_com_3d(arr, x, y, z, n_pix=None, std=False):
         If std=True returns COM and stderr of `arr` expressed as `x`, `y`, `z`,`stdx`,
         `stdy`, `stdz`.
     """
-    # indexes of n_pix most intense pixels of array
+    # Match calc_com_2d: asking for more pixels uses the full array.
     if n_pix is not None:
+        if not isinstance(n_pix, (int, np.integer)) or n_pix <= 0:
+            raise ValueError("n_pix must be a positive integer")
+        n_pix = min(n_pix, arr.size)
         idxs_flat = np.argpartition(arr, -n_pix, axis=None)[-n_pix:]
         idxs = np.unravel_index(idxs_flat, arr.shape)
     else:
@@ -284,7 +287,11 @@ def _calc_com_qspace3d(
     roi_rec_sl = tuple([slice(x.min(), x.max() + 1) for x in roi_rec])
     roi = (idx, *roi_rec_sl)
 
-    if _per_process_cache is None:
+    cache_key = (
+        os.path.abspath(path_qspace), spherical, mask_reciprocal.shape,
+        mask_reciprocal.tobytes(),
+    )
+    if _per_process_cache is None or _per_process_cache[0] != cache_key:
         with h5py.File(path_qspace, "r") as h5f:
             # retrieve q-space coordinates
             if spherical:
@@ -301,8 +308,8 @@ def _calc_com_qspace3d(
         else:
             qxm, qym, qzm = [q[roi_rec] for q in np.meshgrid(qx, qy, qz, indexing="ij")]
 
-        _per_process_cache = (qxm, qym, qzm)
-    qxm, qym, qzm = _per_process_cache
+        _per_process_cache = (cache_key, (qxm, qym, qzm))
+    qxm, qym, qzm = _per_process_cache[1]
 
     with h5py.File(path_qspace, "r") as h5f:
         # data sliced straight from hdf5 OR,
@@ -478,17 +485,21 @@ def calc_roi_sum(path_qspace, mask_reciprocal, mask_direct=None, n_proc=None):
     return np.ma.concatenate(roi_sum_list)
 
 
-def _calc_com_idx(path_h5, path_in_h5, mask_idxs, qx, qy, qz, idx_list, **kwargs):
+def _calc_com_idx(
+    path_h5, path_in_h5, mask_idxs, qx, qy, qz, idx_list, mask_rec=None, **kwargs
+):
     with h5py.File(path_h5, "r") as h5f:
         i0, i1 = idx_list
 
         roi = (slice(i0, i1, None), *mask_idxs)
         frames = h5f[path_in_h5][roi]
 
-        coms = [
-            calc_com_3d(frame, qx[mask_idxs], qy[mask_idxs], qz[mask_idxs], **kwargs)
-            for frame in frames
-        ]
+        coords = [q[mask_idxs] for q in (qx, qy, qz)]
+        if mask_rec is not None:
+            keep = ~mask_rec[mask_idxs]
+            frames = frames[:, keep]
+            coords = [q[keep] for q in coords]
+        coms = [calc_com_3d(frame, *coords, **kwargs) for frame in frames]
 
     return coms
 
@@ -574,6 +585,7 @@ def calc_coms_qspace2d(
         qx,
         qy,
         qz,
+        mask_rec=mask_rec,
         n_pix=n_pix,
         std=std,
     )

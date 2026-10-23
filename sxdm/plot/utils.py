@@ -70,10 +70,12 @@ def make_hsv(tiltmag, azimuth, stretch=False, v2s=False):
     h = (azimuth % 360) / (360)
 
     # saturation is the tilt - normalised [0,1]
-    s = np.abs(tiltmag)
+    s = np.abs(tiltmag).astype(float)
     if stretch:
         s -= s.min()
-    s /= s.max()
+    maximum = s.max()
+    if maximum > 0:
+        s /= maximum
 
     # value is just 1
     v = np.ones_like(h)
