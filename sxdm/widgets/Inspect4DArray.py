@@ -18,7 +18,17 @@ class Inspect4DArray(object):
         self.d0 = 30
         self.d1 = 30
 
-        if not self.ish5:
+        self.row = self.col = 0
+        self.sel_ax_idx = 0
+        self.custom_roi = False
+        if self.ish5:
+            self.dir_space_data = np.zeros(self.data.shape[:2], dtype=np.float64)
+            self.rec_space_data = np.zeros(self.data.shape[2:], dtype=np.float64)
+            for row in range(self.data.shape[0]):
+                frames = self.data[row]
+                self.dir_space_data[row] = frames.sum(axis=(1, 2))
+                self.rec_space_data += frames.sum(axis=0)
+        else:
             self.dir_space_data = self.data.sum(axis=(2, 3))
             self.rec_space_data = self.data.sum(axis=(0, 1))
 
@@ -167,6 +177,9 @@ class Inspect4DArray(object):
 
     def _update_plots(self):
         if not self.custom_roi:
+            offset = 0 if self.sel_ax_idx == 0 else 2
+            self.row = int(np.clip(self.row, 0, self.data.shape[offset] - 1))
+            self.col = int(np.clip(self.col, 0, self.data.shape[offset + 1] - 1))
             if self.sel_ax_idx == 0:
                 self.rec_space_data = self.data[self.row, self.col, :, :]
                 self.higher_img.set_data(self.rec_space_data)

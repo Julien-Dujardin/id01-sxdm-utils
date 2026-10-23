@@ -80,6 +80,8 @@ class GetShift(object):
         self.marked = {s: False for s in self.scan_nos}
         self._click_counter = 0
         self.shifts_init = shifts
+        if shifts is not None:
+            self.shifts = np.array(shifts, dtype=float, copy=True)
 
         self._load_counters_list()
         self._init_fig()
@@ -205,7 +207,7 @@ class GetShift(object):
             "border": "2px solid grey",
             "width": "30%",
             "padding": "2px",
-            "align-items": "stretch",
+            "align_items": "stretch",
         }
 
     def _save_shifts(self, change):
@@ -236,7 +238,8 @@ class GetShift(object):
         data = im.get_array()
 
         if self.fixed_clims is None:
-            _clims = [data[data.nonzero()].min(), data.max()]
+            nonzero = data[data.nonzero()]
+            _clims = [nonzero.min(), data.max()] if nonzero.size else [0, 1]
         else:
             _clims = self.fixed_clims
         self.clims = _clims
@@ -537,7 +540,7 @@ class GetShiftCustom(object):
             "border": "2px solid grey",
             "width": "30%",
             "padding": "2px",
-            "align-items": "stretch",
+            "align_items": "stretch",
         }
 
     def _img_idx_fwd(self, widget):
@@ -565,7 +568,8 @@ class GetShiftCustom(object):
         data = im.get_array()
 
         if not self.fixed_clims:
-            _clims = [data[data.nonzero()].min(), data.max()]
+            nonzero = data[data.nonzero()]
+            _clims = [nonzero.min(), data.max()] if nonzero.size else [0, 1]
         else:
             _clims = self.fixed_clims
         self.clims = _clims
@@ -655,7 +659,7 @@ class GetShiftCustom(object):
             self.idxsel.value = 0
 
     def _calc_shifts(self):
-        if self.shifts.any() is True and self.init is True:
+        if self.shifts.any() and self.init:
             for x in range(1, len(self.img_list)):
                 self.marks[x] = list(np.array(self.marks[0]) - self.shifts[x][::-1])
             self.init = False
