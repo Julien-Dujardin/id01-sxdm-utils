@@ -1,0 +1,155 @@
+#########################
+# Environment Variables #
+#########################
+
+variables:
+  PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+  PRE_COMMIT_HOME: $CI_PROJECT_DIR/.cache/pre-commit
+
+#######################
+# Caching Strategy   #
+#######################
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}  # Cache per branch
+  paths:
+    - .cache/pip
+    - .cache/pre-commit
+    - .venv
+    - doc/build/.doctrees  # Cache Sphinx doctrees
+  policy: pull-push  # More efficient cache policy
+
+##################
+# Job templates  #
+##################
+
+# Poetry installation script
+.poetry-install: &poetry-install
+  image: python:3.11-bullseye
+  before_script:
+    - pip install poetry
+    - poetry config virtualenvs.in-project true
+    - poetry install -v --with dev
+
+# Pandoc installation script
+.pandoc-install: &pandoc-install |
+  export PANDOC_VER=2.19.2
+  wget -q https://github.com/jgm/pandoc/releases/download/$PANDOC_VER/pandoc-$PANDOC_VER-linux-amd64.tar.gz
+  tar xzf pandoc-$PANDOC_VER-linux-amd64.tar.gz
+  mv pandoc-$PANDOC_VER/bin/pandoc /usr/local/bin/
+
+# Only build and deploy docs when
+.doc-rules: &doc-rules
+  rules:
+    # The commit is to the main branch AND contains "build_docs" in the message, OR
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_MESSAGE =~ /build_docs/
+    # The commit is to the main branch AND changes documentation files
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - "doc/**/*"
+        - "**/*.md"
+        - "**/*.rst"
+
+#########################
+# Pipeline Definition   #
+#########################
+
+stages:
+  - verify    # Code quality and formatting checks
+  - build     # Build documentation and assets
+  - test      # Run test suites
+  - deploy    # Deploy documentation and packages
+
+############
+# Verify   #
+############
+
+lint:
+  <<: *poetry-install
+  stage: verify
+  script:
+    - poetry run pre-commit install
+    - poetry run pre-commit run --all-files
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+#########
+# Build #
+#########
+
+# Build docs
+doc:
+  <<: [*poetry-install, *doc-rules]
+  stage: build
+  script:
+    - *pandoc-install
+    - cd doc
+    - poetry run make html
+  artifacts:
+    paths:
+      - doc/build/
+    when: on_success
+    expire_in: 2h
+
+#########
+# Test  #
+#########
+
+test:
+  <<: *poetry-install
+  stage: test
+  parallel: 2  # Run tests in parallel
+  script:
+    # Split tests across parallel jobs
+    - |
+      if [[ $CI_NODE_INDEX == 1 ]]; then
+        # Run package-level and plot tests
+        poetry run pytest tests/test_sxdm.py tests/plot/ --junitxml=tests/report1.xml
+      else
+        # Run xsocs tests
+        poetry run pytest tests/test_xsocs.py --junitxml=tests/report2.xml
+      fi
+  artifacts:
+    when: always
+    reports:
+      junit: tests/report*.xml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_MESSAGE =~ /run_tests/
+
+###########
+# Deploy  #
+###########
+
+# Deploy docs
+pages:
+  stage: deploy
+  image: debian:latest
+  before_script: []
+  script:
+    - mv doc/build/html public
+  artifacts:
+    paths:
+      - public
+  <<: *doc-rules
+  needs:
+    - doc
+
+# Package publishing (commented out for future use)
+# publish-package:
+#   <<: *poetry-install
+#   stage: deploy
+#   script:
+#     - poetry config repositories.gitlab "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
+#     - poetry config http-basic.gitlab gitlab-ci-token $CI_JOB_TOKEN
+#     - poetry build
+#     - poetry publish -r gitlab
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#   needs:
+#     - pages
+#   artifacts:
+#     paths:
+#       - dist/*.whl
+#       - dist/*.tar.gz
