@@ -112,7 +112,19 @@ Motor measurement channels take precedence over initial snapshots. Stationary sc
 
 Only numeric BLISS scan groups (`1.1`, `2.1`, etc.) are considered. Non-spatial scans or scans without usable coordinates cannot be located in 2D and are skipped with a warning. Positions come from `measurement/<motor>`, `<motor>_position`, or `instrument/positioners/` equivalents. Supply explicit axes for unfamiliar commands.
 
-For large scans, at most 5,000 points per scan are displayed by default, plus gap separators; raw arrays remain available through `get_scan_positions`. Use `max_points=None` for all acquired points, or `scan_nos=["1.1", "3.1"]` to limit the overview. This bounds browser rendering; the coordinate channels themselves are read in full. Detector stacks are never loaded to build the overview.
+For large datasets, `get_scan_map` and `display_scan_positions` share a **10,000-point budget across the entire figure**, with an additional cap of 5,000 per scan. Gap separators count toward both limits. Every usable scan remains visible; endpoints and, when possible, spatial extrema are retained. If a scan's budget cannot hold its endpoints and a gap separator, that scan uses markers without connecting across missing measurements. A budget too small to retain every scan raises an actionable error instead of silently omitting scans.
+
+Commands/timestamps are stored once per trace rather than repeated at every point. This keeps marimo cell outputs compact. To adjust detail:
+
+```python
+fig = sxdm.io.bliss.display_scan_positions(path_dset, max_total_points=10_000)
+# Inspect one scan with more detail:
+fig = sxdm.io.bliss.display_scan_positions(path_dset, scan_nos=["1.1"], max_total_points=5000)
+# Explicitly disable both display limits (can exceed marimo's output limit):
+fig = sxdm.io.bliss.display_scan_positions(path_dset, max_points=None, max_total_points=None)
+```
+
+Sampling affects display only: full acquired arrays remain available through `get_scan_positions`, and normalized motor bounds are always computed before sampling. Coordinate channels themselves are read in full; detector stacks are never loaded to build the overview. Native-map point selections contain `[scan_no, acquisition_index]`; normalized-map selections additionally contain the original X/Y motor values.
 
 ## Visualize counters and inspect detector data
 

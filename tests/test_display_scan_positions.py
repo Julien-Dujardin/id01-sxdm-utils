@@ -36,7 +36,7 @@ def test_shared_bounds_include_extrema_removed_by_sampling(scans):
     assert "Mapped" in fig.layout.xaxis.title.text
     assert "um" not in fig.layout.xaxis.title.text
     assert "samx (um)" in fig.data[0].hovertemplate
-    assert fig.data[0].customdata[1][4:] == [10, 2]
+    assert fig.data[0].customdata[1][2:] == [10, 2]
     assert fig.layout.shapes[0].xref == "x"
 
 
@@ -84,6 +84,52 @@ def test_empty_dataset_still_displays_reference_rectangle(tmp_path):
     assert not fig.data
     assert len(fig.layout.shapes) == 1
     assert fig.layout.meta["motor_bounds"] is None
+
+
+def test_many_scans_have_bounded_marimo_payload_and_compact_hover_data(monkeypatch):
+    mo = pytest.importorskip("marimo")
+    from sxdm.io.scan_positions import ScanPositions
+
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=10001)
+    y = rng.normal(size=10001)
+    entries = [
+        ScanPositions(
+            f"{i + 1}.1",
+            "amesh samx 0 100 100 samy 2 4 100 0.1 # échantillon 🔬 "
+            + "description " * 60,
+            "2026-10-30T10:00:00",
+            "samx",
+            "samy",
+            x + i,
+            y + i,
+            np.arange(len(x)),
+            "um",
+            "um",
+        )
+        for i in range(200)
+    ]
+    monkeypatch.setattr(
+        "sxdm.plot.interactive.get_scan_positions", lambda *a, **kw: entries
+    )
+    fig = display_scan_positions("unused.h5")
+    assert len(fig.data) == 200
+    assert sum(len(trace.x) for trace in fig.data) <= 10000
+    assert fig.layout.meta["motor_bounds"] == (
+        x.min(),
+        x.max() + 199,
+        y.min(),
+        y.max() + 199,
+    )
+    for number, trace in enumerate(fig.data, 1):
+        assert trace.name == f"{number}.1"
+        assert "🔬" in trace.hovertemplate
+        assert len(trace.customdata[0]) == 4
+        assert trace.customdata[0][:2] == [f"{number}.1", 0]
+        assert trace.customdata[-1][1] == 10000
+    output = mo.ui.plotly(fig).text
+    assert len(output.encode("utf-8")) < 8_000_000
+    assert sys.getsizeof(output) < 8_000_000
 
 
 def test_html_table_does_not_import_widgets_and_escapes_metadata(tmp_path):

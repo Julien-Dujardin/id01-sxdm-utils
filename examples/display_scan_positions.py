@@ -77,6 +77,7 @@ def _(mo, motor_bounds, path_dset, rectangle, sxdm, x_motor, y_motor):
         y_motor=y_motor,
         rectangle=rectangle,
         motor_bounds=motor_bounds,
+        max_total_points=10_000,  # shared display budget, not per scan
     )
     mo.ui.plotly(figure)
     return (figure,)

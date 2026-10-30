@@ -43,6 +43,102 @@ def _sample_indexes(length, max_points):
     return np.linspace(0, length - 1, max_points, dtype=int)
 
 
+def _validate_total_limit(max_total_points):
+    if max_total_points is not None and (
+        isinstance(max_total_points, bool)
+        or not isinstance(max_total_points, int)
+        or max_total_points < 1
+    ):
+        raise ValueError("max_total_points must be a positive integer or None.")
+
+
+def _trace_budgets(positions, max_points, max_total_points):
+    """Share a strict total budget fairly while retaining every scan."""
+    caps = np.array(
+        [
+            min(scan.x.size, max_points) if max_points is not None else scan.x.size
+            for scan in positions
+        ],
+        dtype=int,
+    )
+    if max_total_points is None or caps.sum() <= max_total_points:
+        return caps
+    minimum = np.array(
+        [
+            min(2, np.count_nonzero(np.isfinite(scan.x) & np.isfinite(scan.y)))
+            for scan in positions
+        ],
+        dtype=int,
+    )
+    required = int(minimum.sum())
+    if required > max_total_points:
+        raise ValueError(
+            f"max_total_points={max_total_points} cannot preserve all {len(positions)} "
+            f"scans and their endpoints. Use at least {required}, select fewer scans, "
+            "or set max_total_points=None."
+        )
+    budgets = minimum.copy()
+    remaining = max_total_points - required
+    while remaining:
+        active = np.flatnonzero(budgets < caps)
+        if not active.size:
+            break
+        share, extra = divmod(remaining, active.size)
+        increments = np.minimum(caps[active] - budgets[active], share)
+        increments[:extra] = np.minimum(
+            caps[active[:extra]] - budgets[active[:extra]], increments[:extra] + 1
+        )
+        budgets[active] += increments
+        remaining -= int(increments.sum())
+    return budgets
+
+
+def _trajectory_indexes(scan, budget):
+    """Sample acquired coordinates; gap separators also consume the budget."""
+    if scan.x.size <= budget:
+        return np.arange(scan.x.size), True
+    valid = np.isfinite(scan.x) & np.isfinite(scan.y)
+    finite = np.flatnonzero(valid)
+    missing = np.flatnonzero(~valid)
+
+    def selected(count):
+        # Keep endpoints first, then spatial extrema when the budget permits.
+        priority = [finite[0], finite[-1]]
+        for values in (scan.x[finite], scan.y[finite]):
+            priority.extend([finite[values.argmin()], finite[values.argmax()]])
+        essential = list(dict.fromkeys(priority))[:count]
+        uniform = finite[np.linspace(0, len(finite) - 1, count, dtype=int)]
+        candidates = uniform[~np.isin(uniform, essential)]
+        needed = count - len(essential)
+        if needed:
+            essential.extend(
+                candidates[np.linspace(0, len(candidates) - 1, needed, dtype=int)]
+            )
+        return np.sort(essential)
+
+    def with_gaps(indexes):
+        if len(indexes) < 2 or not missing.size:
+            return indexes
+        after = np.searchsorted(missing, indexes[:-1], side="right")
+        possible = after < missing.size
+        separators = missing[after[possible]]
+        separators = separators[separators < indexes[1:][possible]]
+        return np.union1d(indexes, separators)
+
+    count = min(len(finite), budget)
+    minimum = min(2, len(finite))
+    while True:
+        indexes = selected(count)
+        separated = with_gaps(indexes)
+        if len(separated) <= budget:
+            return separated, True
+        if count == minimum:
+            # A budget of two cannot hold endpoints plus a gap. Display markers
+            # instead of inventing a continuous line across unrecorded positions.
+            return indexes, False
+        count = max(minimum, min(count - 1, count * budget // len(separated)))
+
+
 def _label(motor, unit):
     return f"{motor} ({unit})" if unit else motor
 
@@ -80,6 +176,7 @@ def get_scan_map(
     y_motor=None,
     scan_nos=None,
     max_points=5000,
+    max_total_points=10000,
     title="Scan positions",
 ):
     """Plot scan trajectories as lines and acquired points, with names on hover.
@@ -90,39 +187,39 @@ def get_scan_map(
     point index. Positions use native motor units, not requested command bounds.
     See :func:`sxdm.io.scan_positions.get_scan_positions` for axis inference.
 
-    ``max_points`` limits displayed positions per scan (including endpoints),
-    with additional missing-position markers retained to break lines at gaps.
-    Set it to ``None`` to retain all points. Sampling affects display only, and
-    is recorded in each trace's metadata. Nonfinite gaps break lines.
+    ``max_points`` limits displayed positions per scan; ``max_total_points``
+    limits positions across the entire figure, including gap separators. The
+    shared budget preserves every scan and its first/last finite acquired positions.
+    If a scan's budget cannot also hold a gap separator, only markers are drawn
+    for that scan. Spatial extrema are retained when the budget permits. Set
+    BOTH limits to ``None`` to retain all points. Sampling affects display only,
+    and is recorded in each trace's metadata. Per-point ``customdata`` contains
+    ``[scan_no, acquisition_index]`` for selections in ``mo.ui.plotly``.
     """
     _sample_indexes(0, max_points)  # Validate even for an empty file.
+    _validate_total_limit(max_total_points)
     positions = get_scan_positions(
         path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
     )
-    return _scan_figure(positions, max_points=max_points, title=title)
+    return _scan_figure(
+        positions, max_points=max_points, max_total_points=max_total_points, title=title
+    )
 
 
-def _scan_figure(positions, *, max_points, title):
+def _scan_figure(positions, *, max_points, max_total_points, title):
     go = _plotly()
     fig = go.Figure()
-    for scan in positions:
-        indexes = _sample_indexes(scan.x.size, max_points)
-        # Retain missing positions as gaps even when thinning a large trajectory.
-        if indexes.size > 1:
-            missing = ~(np.isfinite(scan.x) & np.isfinite(scan.y))
-            starts = np.flatnonzero(missing & np.r_[True, ~missing[:-1]])
-            indexes = np.union1d(indexes, starts)
+    budgets = _trace_budgets(positions, max_points, max_total_points)
+    for scan, budget in zip(positions, budgets):
+        indexes, show_lines = _trajectory_indexes(scan, int(budget))
         count = indexes.size
         scan_name = escape(scan.scan_no)
-        customdata = [
-            [scan.scan_no, scan.title, scan.start_time, int(i)]
-            for i in scan.point_index[indexes]
-        ]
+        customdata = [[scan.scan_no, int(i)] for i in scan.point_index[indexes]]
         fig.add_trace(
             go.Scattergl(
                 x=scan.x[indexes],
                 y=scan.y[indexes],
-                mode="lines+markers",
+                mode="lines+markers" if show_lines else "markers",
                 name=scan.scan_no,
                 customdata=customdata,
                 marker={"size": 6},
@@ -133,7 +230,7 @@ def _scan_figure(positions, *, max_points, title):
                     + escape(scan.title)
                     + "<br>"
                     + escape(scan.start_time)
-                    + "<br>Point %{customdata[3]}"
+                    + "<br>Point %{customdata[1]}"
                     + f"<br>{escape(scan.x_motor)}: %{{x}}"
                     + f"<br>{escape(scan.y_motor)}: %{{y}}<extra></extra>"
                 ),
@@ -141,6 +238,8 @@ def _scan_figure(positions, *, max_points, title):
                     "scan_no": scan.scan_no,
                     "acquired_points": scan.x.size,
                     "displayed_points": count,
+                    "sampled": count < scan.x.size,
+                    "line_gaps_preserved": show_lines,
                 },
             )
         )
@@ -176,6 +275,7 @@ def display_scan_positions(
     motor_bounds=None,
     scan_nos=None,
     max_points=5000,
+    max_total_points=10000,
     title="Scan positions on a normalized rectangle",
 ):
     """Return a marimo-compatible figure mapping scans onto one shared rectangle.
@@ -198,15 +298,23 @@ def display_scan_positions(
     Only recorded positions are drawn; missing trajectories are not reconstructed
     from requested scan-command endpoints. See ``get_scan_positions`` for the
     supported motor-channel layout and axis inference.
+
+    ``max_total_points`` caps displayed positions (default 10,000 across all
+    scans, including separators); ``max_points`` is an
+    additional per-scan cap. Set both to ``None`` for full resolution. Selection
+    ``customdata`` contains ``[scan_no, acquisition_index, native_x, native_y]``.
     """
     rectangle = _validate_bounds(rectangle, "rectangle")
     if motor_bounds is not None:
         motor_bounds = _validate_bounds(motor_bounds, "motor_bounds")
     _sample_indexes(0, max_points)
+    _validate_total_limit(max_total_points)
     positions = get_scan_positions(
         path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
     )
-    fig = _scan_figure(positions, max_points=max_points, title=title)
+    fig = _scan_figure(
+        positions, max_points=max_points, max_total_points=max_total_points, title=title
+    )
     if positions and motor_bounds is None:
         limits = []
         for scan in positions:
@@ -247,9 +355,9 @@ def display_scan_positions(
             + escape(scan.title)
             + "<br>"
             + escape(scan.start_time)
-            + "<br>Point %{customdata[3]}"
-            + f"<br>{escape(_label(scan.x_motor, scan.x_unit))}: %{{customdata[4]}}"
-            + f"<br>{escape(_label(scan.y_motor, scan.y_unit))}: %{{customdata[5]}}"
+            + "<br>Point %{customdata[1]}"
+            + f"<br>{escape(_label(scan.x_motor, scan.x_unit))}: %{{customdata[2]}}"
+            + f"<br>{escape(_label(scan.y_motor, scan.y_unit))}: %{{customdata[3]}}"
             + "<br>Mapped X: %{x}<br>Mapped Y: %{y}<extra></extra>"
         )
     xmin, xmax, ymin, ymax = rectangle
