@@ -9,7 +9,7 @@ from xsocs.io import XsocsH5
 from xsocs.util import project
 from ..io.bliss import get_positioner
 
-from id01lib.io.bliss import get_detector_aliases
+from ..io.bliss import get_detector_aliases
 
 __all__ = ["get_SXDM_info", "parse_scan_command", "make_xsocs_links"]
 

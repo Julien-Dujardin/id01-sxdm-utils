@@ -4,10 +4,7 @@ import multiprocessing as mp
 import os
 import functools
 
-from tqdm.notebook import tqdm
-from xsocs.util import project
-from silx.math import fit
-from silx.math.fit import fittheories
+from tqdm import tqdm
 from numpy.linalg import LinAlgError
 
 from ..io.utils import _get_chunk_indexes
@@ -16,9 +13,16 @@ from ..io.bliss import get_detector_aliases
 _per_process_cache = None
 
 
+def project(data):
+    """Sum a 3D intensity volume onto each axis without the XSOCS dependency."""
+    return tuple(data.sum(axis=axes) / 1 for axes in ((1, 2), (0, 2), (0, 1)))
+
+
 def _gauss_fit_point(path_qspace, roi_slice, rec_axis, qcoords, dir_mask, dir_idx):
     with h5py.File(path_qspace, "r") as h5f:
         local_diffr = h5f["Data/qspace"][dir_idx][roi_slice]
+
+    from silx.math import fit
 
     # load profile
     x, y = qcoords[rec_axis], project(local_diffr)[rec_axis]
@@ -49,6 +53,9 @@ def _gauss_fit_point(path_qspace, roi_slice, rec_axis, qcoords, dir_mask, dir_id
 def _gauss_fit_multi_point(path_qspace, roi_slice, rec_axis, qcoords, mask, dir_idx):
     with h5py.File(path_qspace, "r") as h5f:
         local_diffr = h5f["Data/qspace"][dir_idx][roi_slice]
+
+    from silx.math import fit
+    from silx.math.fit import fittheories
 
     # load profile
     x, y = qcoords[rec_axis], project(local_diffr)[rec_axis]

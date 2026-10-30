@@ -2,7 +2,7 @@ import numpy as np
 import multiprocessing as mp
 import h5py
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from functools import partial
 
 from .utils import _get_chunk_indexes, _get_qspace_avg_chunk, ioh5

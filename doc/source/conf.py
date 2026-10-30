@@ -15,7 +15,7 @@ copyright = "2024, Edoardo Zatterin"
 author = "Edoardo Zatterin"
 year = date.today().year
 
-release = "0.1.0"
+release = "0.2.0"
 
 
 # -- General configuration ---------------------------------------------------

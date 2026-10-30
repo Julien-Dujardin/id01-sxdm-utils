@@ -4,9 +4,9 @@ import ipywidgets as ipw
 import matplotlib as mpl
 import os
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
-from sxdm.widgets import Inspect4DArray
+from ..Inspect4DArray import Inspect4DArray
 from ...io.bliss import (
     get_detector_aliases,
     get_scan_shape,

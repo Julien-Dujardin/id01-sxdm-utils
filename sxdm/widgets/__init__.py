@@ -1,12 +1,23 @@
-import matplotlib as mpl
+"""Legacy Jupyter interfaces; install the jupyter and analysis extras."""
 
-from .Inspect4DArray import Inspect4DArray
-from . import bliss
+from importlib import import_module
 
-try:
-    mpl.rcParams["keymap.back"].remove("left")
-    mpl.rcParams["keymap.forward"].remove("right")
-except ValueError:
-    pass
+_MODULES = ["bliss", "spec", "xsocs"]
+_EXPORTS = {"Inspect4DArray": ("Inspect4DArray", "Inspect4DArray")}
+__all__ = list(_MODULES) + list(_EXPORTS)
 
-from . import spec, xsocs
+
+def __getattr__(name):
+    if name in _MODULES:
+        value = import_module(f"{__name__}.{name}")
+    elif name in _EXPORTS:
+        module, attr = _EXPORTS[name]
+        value = getattr(import_module(f"{__name__}.{module}"), attr)
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

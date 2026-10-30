@@ -2,6 +2,12 @@
 
 import unittest
 import numpy as np
+import pytest
+
+pytest.importorskip(
+    "matplotlib", reason="Plot utility tests require the analysis extra"
+)
+pytest.importorskip("gif", reason="Plot utility tests require the analysis extra")
 from sxdm.plot.utils import make_hsv
 
 

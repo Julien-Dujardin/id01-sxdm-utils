@@ -13,7 +13,7 @@ from IPython.display import display
 from IPython.terminal.pt_inputhooks import UnknownBackend
 from IPython import get_ipython
 
-from id01lib.io.bliss import get_positioner
+from ...io.bliss import get_positioner
 from ...plot.utils import add_colorbar
 from ...io.utils import list_available_counters
 from ...io.bliss import (

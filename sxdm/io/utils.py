@@ -1,7 +1,7 @@
 import h5py
 import os
 
-from id01lib.io.bliss import ioh5
+from ._bliss import ioh5
 
 
 @ioh5

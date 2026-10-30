@@ -1,0 +1,162 @@
+"""Coordinates come from acquired motor channels, never requested bounds."""
+
+import h5py
+import numpy as np
+import pytest
+
+from sxdm.io.scan_positions import get_scan_positions
+
+
+def add_scan(h5f, name, title, x=None, y=None, *, static_y=None):
+    scan = h5f.create_group(name)
+    scan["title"] = title
+    scan["start_time"] = "2026-10-30T09:00:00+00:00"
+    if x is not None:
+        scan["measurement/piy"] = x
+        scan["measurement/piy"].attrs["units"] = "um"
+    if y is not None:
+        scan["measurement/piz_position"] = y
+        scan["measurement/piz_position"].attrs["units"] = "um"
+    if static_y is not None:
+        scan["instrument/positioners/piz"] = static_y
+        scan["instrument/positioners/piz"].attrs["units"] = "um"
+    return scan
+
+
+@pytest.fixture
+def scans(tmp_path):
+    path = tmp_path / "scans.h5"
+    with h5py.File(path, "w") as f:
+        f.create_group("metadata")
+        add_scan(f, "10.1", "ct 0.1", [7], [8])
+        add_scan(f, "2.1", "ascan piy 0 10 100 0.1", [1, 2, 3], static_y=9)
+        add_scan(
+            f,
+            "1.1",
+            "sxdm(piy, 0, 10, 100, piz, 0, 10, 100, 0.1)",
+            [0, 1, 0, 1],
+            [0, 0, 1, 1],
+        )
+    return path
+
+
+def test_mesh_line_and_point_sorted_measured_only(scans):
+    result = get_scan_positions(scans)
+    assert [scan.scan_no for scan in result] == ["1.1", "2.1", "10.1"]
+    assert (result[0].x_motor, result[0].y_motor) == ("piy", "piz")
+    np.testing.assert_array_equal(result[0].x, [0, 1, 0, 1])
+    np.testing.assert_array_equal(result[1].x, [1, 2, 3])
+    np.testing.assert_array_equal(result[1].y, [9, 9, 9])
+    np.testing.assert_array_equal(result[2].x, [7])
+    assert result[0].x_unit == "um"
+    assert result[0].title.startswith("sxdm(")
+
+
+def test_explicit_axes_and_scan_selection(scans):
+    result = get_scan_positions(scans, scan_nos="2.1", x_motor="piy", y_motor="piz")
+    assert len(result) == 1
+    assert result[0].scan_no == "2.1"
+    with pytest.raises(ValueError, match="infer"):
+        get_scan_positions(scans, scan_nos=["2.1"])
+    with pytest.raises(ValueError, match="both"):
+        get_scan_positions(scans, x_motor="piy")
+    with pytest.raises(ValueError, match="distinct"):
+        get_scan_positions(scans, x_motor="piy", y_motor="piy")
+    with pytest.raises(KeyError, match="not found"):
+        get_scan_positions(scans, scan_nos=["99.1"])
+
+
+def test_interrupted_scan_keeps_shared_prefix_and_missing_gaps(tmp_path):
+    path = tmp_path / "partial.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", [0, 1, np.nan, 3], [2, 2, 2])
+    with pytest.warns(UserWarning, match="shared acquired prefix"):
+        scan = get_scan_positions(path)[0]
+    np.testing.assert_array_equal(scan.point_index, [0, 1, 2])
+    np.testing.assert_array_equal(scan.x, [0, 1, np.nan])
+
+
+def test_single_acquired_point_is_not_a_static_position(tmp_path):
+    path = tmp_path / "one-point.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", [0], [1, 2, 3])
+    with pytest.warns(UserWarning, match="shared acquired prefix"):
+        scan = get_scan_positions(path)[0]
+    np.testing.assert_array_equal(scan.x, [0])
+    np.testing.assert_array_equal(scan.y, [1])
+
+
+def test_acquired_positioner_array_takes_precedence_over_initial_measurement(tmp_path):
+    path = tmp_path / "positioners.h5"
+    with h5py.File(path, "w") as f:
+        scan = add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", [0], [0, 1, 2])
+        scan["instrument/positioners/piy_position"] = [3, 4, 5]
+    scan = get_scan_positions(path)[0]
+    np.testing.assert_array_equal(scan.x, [3, 4, 5])
+
+
+def test_compressed_motor_channels_register_filters(tmp_path):
+    import hdf5plugin
+
+    path = tmp_path / "compressed.h5"
+    with h5py.File(path, "w") as f:
+        scan = add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", y=[0, 1, 2])
+        scan.create_dataset(
+            "measurement/piy", data=[3, 4, 5], **hdf5plugin.Bitshuffle()
+        )
+    np.testing.assert_array_equal(get_scan_positions(path)[0].x, [3, 4, 5])
+
+
+def test_static_snapshots_of_moving_motors_are_not_trajectories(tmp_path):
+    path = tmp_path / "snapshots.h5"
+    with h5py.File(path, "w") as f:
+        s = add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", static_y=4)
+        s["instrument/positioners/piy"] = 3
+    with pytest.warns(UserWarning, match="static snapshot"):
+        assert get_scan_positions(path) == []
+
+
+def test_missing_non_numeric_or_image_motor_channels_skip_without_read(tmp_path):
+    path = tmp_path / "invalid.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", np.zeros((2, 2, 2)), [0, 1])
+        add_scan(f, "2.1", "ct 1", [1], [np.nan])
+        f["3.1"] = h5py.ExternalLink("does-not-exist.h5", "/entry")
+    with pytest.warns(UserWarning) as recorded:
+        assert get_scan_positions(path) == []
+    messages = " ".join(str(w.message) for w in recorded)
+    assert "inaccessible" in messages
+    assert "missing coordinates" in messages
+    assert "no finite" in messages
+
+
+def test_empty_and_bytes(tmp_path):
+    path = tmp_path / "empty.h5"
+    with h5py.File(path, "w"):
+        pass
+    assert get_scan_positions(path) == []
+    with h5py.File(path, "a") as f:
+        add_scan(f, "1.1", np.bytes_("mesh piy 0 1 1 piz 0 1 1 0.1"), [0], [1])
+    assert isinstance(get_scan_positions(path)[0].title, str)
+
+
+def test_unicode_motor_names_and_scan_titles(tmp_path):
+    path = tmp_path / "unicode.h5"
+    with h5py.File(path, "w") as f:
+        f["1.1/title"] = "mesh πy 0 1 2 πz 0 1 2 0.1 # échantillon"
+        f["1.1/measurement/πy"] = [1, 2]
+        f["1.1/measurement/πz"] = [3, 4]
+        f["1.1/measurement/πy"].attrs["units"] = "µm"
+    scan = get_scan_positions(path)[0]
+    assert scan.x_motor == "πy"
+    assert scan.x_unit == "µm"
+    assert "échantillon" in scan.title
+
+
+def test_missing_external_motor_channel_is_skipped(tmp_path):
+    path = tmp_path / "broken-motor.h5"
+    with h5py.File(path, "w") as f:
+        scan = add_scan(f, "1.1", "mesh piy 0 4 5 piz 0 4 5 0.1", y=[0, 1])
+        scan["measurement/piy"] = h5py.ExternalLink("missing.h5", "/positions")
+    with pytest.warns(UserWarning, match="coordinates"):
+        assert get_scan_positions(path) == []

@@ -1,8 +1,7 @@
-"""Package-level tests for sxdm."""
-
+"""Package metadata must agree with the installed distribution."""
+from importlib.metadata import version
 import sxdm
 
 
 def test_version():
-    """Test package version."""
-    assert sxdm.__version__ == "0.1.0"
+    assert sxdm.__version__ == version("id01-sxdm")

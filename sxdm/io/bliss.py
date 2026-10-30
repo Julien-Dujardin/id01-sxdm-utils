@@ -2,14 +2,13 @@ import numpy as np
 import multiprocessing as mp
 import os
 import h5py
-import ipywidgets as ipw
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from functools import partial
 from datetime import datetime
 
-from id01lib.io.bliss import ioh5
-from id01lib.io.bliss import (
+from ._bliss import (
+    ioh5,
     get_command,
     get_counter,
     get_positioner,
@@ -20,6 +19,14 @@ from id01lib.io.bliss import (
 )
 
 from .utils import _get_chunk_indexes
+from .scan_positions import get_scan_positions
+
+
+def get_scan_map(path_dset, **kwargs):
+    """Return a browser-native 2D scan overview. See sxdm.plot.get_scan_map."""
+    from ..plot.interactive import get_scan_map as plot_scans
+
+    return plot_scans(path_dset, **kwargs)
 
 
 @ioh5
@@ -236,21 +243,48 @@ def get_counter_sxdm(h5f, scan_no, counter, return_pi_motors=False):
         return data
 
 
-def _get_frames_chunk(path_dset, path_in_h5, roi_dir_idxs, roi, idx_range):
-    """
-    Return the q-space intensity array summed over the (flattened) sample positons
-    given by `idx_range`, which is a list of tuples.
-    """
-    idx_list = [x for x in range(*idx_range, 1) if x in roi_dir_idxs]
-    if roi is not None:
-        roi_sl = np.s_[idx_list, roi[0] : roi[1], roi[2] : roi[3]]
+def _batch_size(dataset, roi_shape):
+    # Bound each worker's input to approximately 32 MiB (at least one frame).
+    frame_bytes = max(1, int(np.prod(roi_shape)) * dataset.dtype.itemsize)
+    return min(1024, max(1, (32 * 1024**2) // frame_bytes))
+
+
+def _map_chunks(func, indexes, n_proc):
+    """Run small/default jobs in-process; limit pools to actual work."""
+    if n_proc == 1 or len(indexes) == 1:
+        yield from map(func, indexes)
     else:
-        roi_sl = np.s_[idx_list, ...]
+        with mp.Pool(processes=min(n_proc, len(indexes))) as pool:
+            yield from pool.imap(func, indexes)
 
+
+def _get_frames_chunk(path_dset, path_in_h5, roi_dir_idxs, roi, idx_range):
+    """Sum selected frames in bounded batches, with ROI applied during reading."""
+    selected = np.asarray(roi_dir_idxs)
+    selected = selected[(selected >= idx_range[0]) & (selected < idx_range[1])]
     with h5py.File(path_dset, "r") as h5f:
-        arr = h5f[path_in_h5][roi_sl].sum(0)
-
-    return arr
+        dataset = h5f[path_in_h5]
+        rows, cols = dataset.shape[1:]
+        if roi is None:
+            roi = (0, rows, 0, cols)
+        if len(roi) != 4 or not (
+            0 <= roi[0] <= roi[1] <= rows and 0 <= roi[2] <= roi[3] <= cols
+        ):
+            raise ValueError("ROI must lie within the detector bounds")
+        shape = (roi[1] - roi[0], roi[3] - roi[2])
+        dtype = np.sum(np.empty(0, dtype=dataset.dtype)).dtype
+        result = np.zeros(shape, dtype=dtype)
+        batch = _batch_size(dataset, shape)
+        for start in range(0, selected.size, batch):
+            indexes = selected[start : start + batch]
+            selection = (
+                slice(int(indexes[0]), int(indexes[-1]) + 1)
+                if np.all(np.diff(indexes) == 1)
+                else indexes.tolist()
+            )
+            frames = dataset[selection, roi[0] : roi[1], roi[2] : roi[3]]
+            result += frames.sum(axis=0)
+    return result
 
 
 def get_sxdm_frame_sum(
@@ -279,7 +313,7 @@ def get_sxdm_frame_sum(
     detector : str, optional
         The detector used for the SXDM scan, by default None
     n_proc : int, optional
-        Number of processes to spawn for parallel computation, by default None
+        Number of processes. None uses one process to avoid notebook startup overhead
     pbar : bool, optional
         Spawn a process bar, by default True
     path_data_h5 : str, optional
@@ -310,7 +344,7 @@ def get_sxdm_frame_sum(
         path_data_h5 = path_data_h5.format(scan_no=scan_no, detector=detector)
 
         if n_proc is None:
-            n_proc = os.cpu_count()
+            n_proc = 1
 
         # list of idx ranges [(i0, i1), (i0, i1), ...]
         indexes = _get_chunk_indexes(path_dset, path_data_h5, n_proc)
@@ -321,6 +355,9 @@ def get_sxdm_frame_sum(
 
         # direct space slice from mask
         if mask_sample is not None:
+            if np.asarray(mask_sample).size != sh:
+                raise ValueError("Sample mask must contain one value per frame")
+            mask_sample = np.asarray(mask_sample, dtype=bool)
             roi_dir_idxs = np.where(np.invert(mask_sample).flatten())[0]
         else:
             roi_dir_idxs = np.indices((sh,))[0]
@@ -340,14 +377,13 @@ def get_sxdm_frame_sum(
             pbar.reset(total=len(indexes))
         except AttributeError:
             pass
-        with mp.Pool(processes=n_proc) as p:
-            for res in p.imap(pfun, indexes):
-                frame_sum_list.append(res)
-                try:
-                    pbar.update()
-                    pbar.refresh()
-                except AttributeError:  # pbar=False
-                    pass
+        for res in _map_chunks(pfun, indexes, n_proc):
+            frame_sum_list.append(res)
+            try:
+                pbar.update()
+                pbar.refresh()
+            except AttributeError:  # pbar=False
+                pass
 
         if pbar:
             pbar.close()
@@ -355,25 +391,26 @@ def get_sxdm_frame_sum(
         return np.stack(frame_sum_list).sum(0)
 
 
-def _calc_pos_sum_chunk(path_dset, path_in_h5, roi_rec_sl, idx_range, mask_detector=None):
-    """
-    Calculate the direct space intensity of a 4D SXDM dataset:
-    * for the direct space indexes in the range `idx_range`;
-    * within the reciprocal space slice `roi_rec_sl`;
-    * masked in direct space where `mask_direct` is True.
-
-    Returns a `numpy.masked_array`.
-    """
+def _calc_pos_sum_chunk(
+    path_dset, path_in_h5, roi_rec_sl, idx_range, mask_detector=None
+):
+    """Integrate detector ROIs in bounded batches, honoring irregular masks."""
     i0, i1 = idx_range
-
-    roi_slice = (slice(i0, i1, None), *roi_rec_sl)  # 3D
     with h5py.File(path_dset, "r") as h5f:
-        frames = h5f[path_in_h5][roi_slice]
-        if mask_detector is not None:
-            frames = np.where(mask_detector[roi_rec_sl], 0, frames)
-        arr = frames.sum(axis=(1, 2))
-
-    return arr
+        dataset = h5f[path_in_h5]
+        roi_shape = tuple(
+            len(range(*sl.indices(n))) for sl, n in zip(roi_rec_sl, dataset.shape[1:])
+        )
+        batch = _batch_size(dataset, roi_shape)
+        dtype = np.sum(np.empty(0, dtype=dataset.dtype)).dtype
+        result = np.empty(i1 - i0, dtype=dtype)
+        for start in range(i0, i1, batch):
+            stop = min(start + batch, i1)
+            frames = dataset[(slice(start, stop), *roi_rec_sl)]
+            if mask_detector is not None:
+                frames = np.where(mask_detector[roi_rec_sl], 0, frames)
+            result[start - i0 : stop - i0] = frames.sum(axis=(1, 2))
+    return result
 
 
 def get_sxdm_pos_sum(
@@ -401,7 +438,7 @@ def get_sxdm_pos_sum(
     detector : str, optional
         Alias of the detector used for the SXDM scan, by default None
     n_proc : int, optional
-        Number of processes to spawn for parallel computation, by default None
+        Number of processes. None uses one process to avoid notebook startup overhead
     pbar : bool, optional
         Spawn a process bar, by default True
     path_data_h5 : str, optional
@@ -430,13 +467,17 @@ def get_sxdm_pos_sum(
         path_data_h5 = path_data_h5.format(scan_no=scan_no, detector=detector)
 
     if n_proc is None:
-        n_proc = os.cpu_count()
+        n_proc = 1
 
     # list of idx ranges [(i0, i1), (i0, i1), ...]
     idxs_list = _get_chunk_indexes(path_dset, path_data_h5, n_proc=n_proc)
 
     # recipocal space slice from mask
     if mask_detector is not None:
+        with h5py.File(path_dset, "r") as h5f:
+            if np.shape(mask_detector) != h5f[path_data_h5].shape[1:]:
+                raise ValueError("Detector mask must match the detector frame shape")
+        mask_detector = np.asarray(mask_detector, dtype=bool)
         roi_rec = np.where(np.invert(mask_detector.astype("bool")))
         mask_detector = np.asarray(mask_detector, dtype=bool)
         if roi_rec[0].size:
@@ -449,7 +490,10 @@ def get_sxdm_pos_sum(
     # call function with everything except the index ranges
     # the function returns a direct space map
     pfun = partial(
-        _calc_pos_sum_chunk, path_dset, path_data_h5, roi_rec_sl,
+        _calc_pos_sum_chunk,
+        path_dset,
+        path_data_h5,
+        roi_rec_sl,
         mask_detector=mask_detector,
     )
 
@@ -466,14 +510,13 @@ def get_sxdm_pos_sum(
         pbar.reset(total=len(idxs_list))
     except AttributeError:
         pass
-    with mp.Pool(processes=n_proc) as p:
-        for res in p.imap(pfun, idxs_list):
-            roi_sum_list.append(res)
-            try:
-                pbar.update()
-                pbar.refresh()
-            except AttributeError:  # pbar=False
-                pass
+    for res in _map_chunks(pfun, idxs_list, n_proc):
+        roi_sum_list.append(res)
+        try:
+            pbar.update()
+            pbar.refresh()
+        except AttributeError:  # pbar=False
+            pass
 
     if pbar:
         pbar.close()
@@ -577,7 +620,14 @@ def get_scan_table(path_dset):
     table += ["  </tbody>", "</table>", "</div>"]
     table = "\n".join(table)
 
-    return ipw.HTML(table)
+    try:
+        from ipywidgets import HTML
+    except ImportError as exc:
+        raise ImportError(
+            "The legacy table needs id01-sxdm[jupyter]. "
+            "Use get_scan_map() for a marimo-compatible scan overview."
+        ) from exc
+    return HTML(table)
 
 
 def get_sxdm_frame_sum_multi(
@@ -608,8 +658,11 @@ def get_sxdm_frame_sum_multi(
         fint_tot = np.zeros((*frame_shape, len(scan_nums)))
         for i, scan_no in tqdm(enumerate(scan_nums), total=len(scan_nums)):
             fint_tot[..., i] = get_sxdm_frame_sum(
-                path_dset, scan_no, detector=detector,
-                path_data_h5=path_data_h5, pbar=False,
+                path_dset,
+                scan_no,
+                detector=detector,
+                path_data_h5=path_data_h5,
+                pbar=False,
             )
         fint_tot = fint_tot.transpose(2, 0, 1)
         # if fname
@@ -621,3 +674,35 @@ def get_sxdm_frame_sum_multi(
         fint_tot = np.load(path_save_framesum)
 
     return fint_tot
+
+
+def get_detector_frame(path_dset, scan_no, frame_index=0, *, detector=None, roi=None):
+    """Read just one detector image, optionally cropped before loading.
+
+    ``frame_index`` is the zero-based acquisition index. ``roi`` is
+    ``(row_start, row_stop, col_start, col_stop)`` with exclusive stop bounds.
+    No file handle is retained, making this safe for reactive marimo cells.
+    """
+    from numbers import Integral
+    from ._bliss import _scan_no
+
+    scan_no = _scan_no(scan_no)
+    if isinstance(frame_index, bool) or not isinstance(frame_index, Integral):
+        raise ValueError("frame_index must be a nonnegative integer")
+    with h5py.File(path_dset, "r") as h5f:
+        detector = _check_detector(h5f, scan_no, detector)
+        data = h5f[f"{scan_no}/instrument/{detector}/data"]
+        if data.ndim != 3:
+            raise ValueError("Detector data must have shape (frames, rows, columns)")
+        if not 0 <= frame_index < data.shape[0]:
+            raise IndexError(f"frame_index must be between 0 and {data.shape[0] - 1}")
+        rows, cols = data.shape[1:]
+        if roi is None:
+            roi = (0, rows, 0, cols)
+        if len(roi) != 4 or not all(
+            isinstance(i, Integral) and not isinstance(i, bool) for i in roi
+        ):
+            raise ValueError("ROI must contain four integer bounds")
+        if not (0 <= roi[0] < roi[1] <= rows and 0 <= roi[2] < roi[3] <= cols):
+            raise ValueError("ROI must lie within the detector bounds and be nonempty")
+        return data[frame_index, roi[0] : roi[1], roi[2] : roi[3]]
