@@ -201,3 +201,107 @@ def test_missing_external_motor_channel_is_skipped(tmp_path):
         scan["measurement/piy"] = h5py.ExternalLink("missing.h5", "/positions")
     with pytest.warns(UserWarning, match="coordinates"):
         assert get_scan_positions(path) == []
+
+
+@pytest.fixture
+def mixed_scan_types(tmp_path):
+    path = tmp_path / "mixed-types.h5"
+    commands = [
+        "sxdm",
+        "asxdm",
+        "dsxdm",
+        "kmap",
+        "mesh",
+        "amesh",
+        "dmesh",
+        "ascan",
+        "dscan",
+        "ct",
+        "a2scan",
+        "fscan",
+        "sxdm_extra",
+    ]
+    with h5py.File(path, "w") as f:
+        for number, command in enumerate(commands, 1):
+            if command in {"ascan", "dscan"}:
+                title = f"{command} piy 0 1 2 0.1"
+            elif command == "ct":
+                title = "ct 0.1 # mesh sxdm ascan are comments, not commands"
+            elif command == "a2scan":
+                title = "a2scan piy 0 1 piz 0 1 2 0.1"
+            else:
+                title = f"{command}(piy, 0, 1, 2, piz, 0, 1, 2, 0.1)"
+            add_scan(f, f"{number}.1", title, [0, 1], [2, 3])
+    return path
+
+
+@pytest.mark.parametrize(
+    "scan_type, numbers",
+    [
+        ("sxdm", [1, 2, 3, 4]),
+        ("mesh", [5, 6, 7]),
+        ("ascan", [8, 9]),
+        (" ASXDM ", [2]),
+        (["mesh", "AScan", "asxdm"], [2, 5, 6, 7, 8, 9]),
+        (["ct", "a2scan", "fscan"], [10, 11, 12]),
+    ],
+)
+def test_scan_type_families_aliases_and_unions(mixed_scan_types, scan_type, numbers):
+    scans = get_scan_positions(mixed_scan_types, scan_type=scan_type)
+    assert [scan.scan_no for scan in scans] == [f"{number}.1" for number in numbers]
+    assert all((scan.x_motor, scan.y_motor) == ("piy", "piz") for scan in scans)
+
+
+def test_scan_type_intersects_scan_numbers_and_validates_missing_ids(mixed_scan_types):
+    scans = get_scan_positions(
+        mixed_scan_types, scan_type="mesh", scan_nos=[2, 5, 6, 8]
+    )
+    assert [scan.scan_no for scan in scans] == ["5.1", "6.1"]
+    assert get_scan_positions(mixed_scan_types, scan_type="mesh", scan_nos=[2]) == []
+    with pytest.raises(KeyError, match="not found"):
+        get_scan_positions(mixed_scan_types, scan_type=[], scan_nos=[99])
+
+
+def test_empty_type_selection_has_no_axis_inference_error(tmp_path):
+    path = tmp_path / "no-matching-types.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(f, "1.1", "ct 1", [0], [1])
+    assert get_scan_positions(path, scan_type=[]) == []
+    assert get_scan_positions(path, scan_type="mesh") == []
+
+
+@pytest.mark.parametrize(
+    "selection", ["mseh", "", 1, b"mesh", {"mesh": True}, ["mesh", 1]]
+)
+def test_invalid_scan_type_fails_before_file_read(selection):
+    with pytest.raises(ValueError, match="scan_type"):
+        get_scan_positions("missing.h5", scan_type=selection)
+
+
+def test_selected_2d_types_infer_their_own_axes_first(tmp_path):
+    path = tmp_path / "different-motors.h5"
+    with h5py.File(path, "w") as f:
+        f["1.1/title"] = "sxdm samx 0 1 2 samy 0 1 2 0.1"
+        add_scan(f, "2.1", "mesh piy 0 1 2 piz 0 1 2 0.1", [0, 1], [2, 3])
+    selected = get_scan_positions(path, scan_type="mesh")
+    assert len(selected) == 1
+    assert (selected[0].x_motor, selected[0].y_motor) == ("piy", "piz")
+
+
+def test_scan_type_filter_runs_before_reading_motor_channels(
+    mixed_scan_types, monkeypatch
+):
+    from sxdm.io import scan_positions
+
+    original = scan_positions._read_motor
+    visited = []
+
+    def read_selected_only(scan, motor):
+        visited.append(scan.name)
+        assert scan.name in {"/8.1", "/9.1"}
+        return original(scan, motor)
+
+    monkeypatch.setattr(scan_positions, "_read_motor", read_selected_only)
+    selected = get_scan_positions(mixed_scan_types, scan_type="ascan")
+    assert len(selected) == 2
+    assert visited == ["/8.1", "/8.1", "/9.1", "/9.1"]

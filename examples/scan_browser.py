@@ -54,15 +54,16 @@ def _(mo):
     y_input = mo.ui.text(
         value=str(mo.cli_args().get("y-motor", "")), label="Y motor (optional)"
     )
+    scan_type_choice = mo.ui.dropdown(
+        ["all", "sxdm", "mesh", "ascan"], value="all", label="Scan type"
+    )
     refresh = mo.ui.run_button(label="Refresh file")
-    mo.vstack([dataset_input, mo.hstack([x_input, y_input, refresh])])
-    return dataset_input, refresh, x_input, y_input
+    mo.vstack([dataset_input, mo.hstack([x_input, y_input, scan_type_choice, refresh])])
+    return dataset_input, refresh, scan_type_choice, x_input, y_input
 
 
 @app.cell
-def _(
-    Path, dataset_input, get_scan_map, get_scan_positions, mo, refresh, x_input, y_input
-):
+def _(Path, dataset_input, get_scan_positions, mo, refresh, x_input, y_input):
     refresh.value
     mo.stop(
         not dataset_input.value,
@@ -71,22 +72,34 @@ def _(
     path = Path(dataset_input.value).expanduser()
     mo.stop(not path.is_file(), mo.md("The dataset path is not a file."))
     axes = {"x_motor": x_input.value or None, "y_motor": y_input.value or None}
-    error = ""
-    positions = []
-    overview = None
+    _error = ""
+    _reference = []
     try:
-        positions = get_scan_positions(path, **axes)
-        overview = get_scan_map(path, **axes)
-    except (OSError, ValueError, KeyError) as exc:
-        error = str(exc)
-    mo.stop(bool(error), mo.callout(mo.plain_text(error), kind="warn"))
+        _reference = get_scan_positions(path, **axes)
+    except (OSError, ValueError, KeyError) as _exc:
+        _error = str(_exc)
+    mo.stop(bool(_error), mo.callout(mo.plain_text(_error), kind="warn"))
+    mo.stop(
+        not _reference, mo.md("No usable scan positions. Try explicit motor names.")
+    )
+    axes = {"x_motor": _reference[0].x_motor, "y_motor": _reference[0].y_motor}
+    return axes, path
+
+
+@app.cell
+def _(axes, get_scan_map, get_scan_positions, mo, path, refresh, scan_type_choice):
+    refresh.value
+    _scan_type = None if scan_type_choice.value == "all" else scan_type_choice.value
+    positions = get_scan_positions(path, scan_type=_scan_type, **axes)
+    overview = get_scan_map(path, scan_type=_scan_type, **axes)
     mo.stop(
         not positions,
-        mo.md("No acquired scan positions found. Try explicit motor names."),
+        mo.md(
+            "No acquired positions match this scan type in the selected motor frame."
+        ),
     )
-    axes = {"x_motor": positions[0].x_motor, "y_motor": positions[0].y_motor}
     mo.ui.plotly(overview)
-    return axes, path, positions
+    return (positions,)
 
 
 @app.cell

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -12,6 +13,16 @@ import hdf5plugin  # noqa: F401 - register BLISS compression filters before read
 import numpy as np
 
 __all__ = ["ScanPositions", "get_scan_positions"]
+
+_SCAN_TYPE_FAMILIES = {
+    "sxdm": frozenset({"sxdm", "asxdm", "dsxdm", "kmap"}),
+    "mesh": frozenset({"mesh", "amesh", "dmesh"}),
+    "ascan": frozenset({"ascan", "dscan"}),
+}
+_EXACT_SCAN_COMMANDS = frozenset().union(
+    *_SCAN_TYPE_FAMILIES.values(),
+    {"ct", "fscan", "a2scan", "d2scan", "a3scan", "d3scan", "loopscan", "timescan"},
+)
 
 
 @dataclass(frozen=True)
@@ -68,9 +79,51 @@ def _scan_entries(h5f):
     return sorted(entries, key=_scan_key)
 
 
+def _command_tokens(title):
+    return re.sub(r"[(),]", " ", title).split()
+
+
+def _scan_command(title):
+    """Return the exact command token, independently of its scan parameters."""
+    tokens = _command_tokens(title)
+    return tokens[0].lower() if tokens else ""
+
+
+def _scan_type_commands(scan_type):
+    """Validate a scan-family/exact-command selection and expand its union."""
+    if scan_type is None:
+        return None
+    if isinstance(scan_type, str):
+        selected = [scan_type]
+    elif isinstance(scan_type, Sequence) and not isinstance(
+        scan_type, (bytes, bytearray)
+    ):
+        selected = scan_type
+    else:
+        raise ValueError(
+            "scan_type must be a command/family string, a sequence of strings, or None."
+        )
+    commands = set()
+    for value in selected:
+        if not isinstance(value, str):
+            raise ValueError("scan_type entries must be command/family strings.")
+        value = value.strip().lower()
+        if value in _SCAN_TYPE_FAMILIES:
+            commands.update(_SCAN_TYPE_FAMILIES[value])
+        elif value in _EXACT_SCAN_COMMANDS:
+            commands.add(value)
+        else:
+            supported = ", ".join(sorted(_EXACT_SCAN_COMMANDS))
+            raise ValueError(
+                f"Unknown scan_type {value!r}. Use a family (sxdm, mesh, ascan) "
+                f"or an exact supported command: {supported}."
+            )
+    return frozenset(commands)
+
+
 def _command_motors(title):
     """Recognize motor names, never derive trajectories from requested bounds."""
-    tokens = re.sub(r"[(),]", " ", title).split()
+    tokens = _command_tokens(title)
     if not tokens:
         return ()
     command = tokens[0].lower()
@@ -119,6 +172,7 @@ def get_scan_positions(
     x_motor: str | None = None,
     y_motor: str | None = None,
     scan_nos=None,
+    scan_type=None,
 ) -> list[ScanPositions]:
     """Read acquired 2D trajectories for scans in a BLISS master HDF5 file.
 
@@ -136,10 +190,21 @@ def get_scan_positions(
     Scans without usable coordinates are skipped with a warning; no detector
     images are read. ``scan_nos`` optionally limits entries (e.g. ``["1.1"]``).
 
+    ``scan_type`` optionally selects a family or sequence of families:
+    ``"sxdm"`` includes sxdm/asxdm/dsxdm/kmap, ``"mesh"`` includes
+    mesh/amesh/dmesh, and ``"ascan"`` includes ascan/dscan. Other supported
+    command names (e.g. ``"asxdm"``, ``"ct"``, ``"a2scan"``) select exact
+    commands. Matching is case-insensitive and uses the first command token.
+    ``None`` selects all types; an empty sequence selects none. This selection
+    intersects ``scan_nos`` and is applied before reading motor coordinates.
+    Axes are inferred from selected scans first, falling back to other scans
+    within ``scan_nos`` when selecting only line/point scans from a mixed file.
+
     Returns an empty list when the file has no scans. Raises ``ValueError`` if
     axes cannot be inferred or only one axis is supplied. Coordinate values keep
     the file's native units; the function performs no unit conversion.
     """
+    accepted_commands = _scan_type_commands(scan_type)
     if (x_motor is None) != (y_motor is None):
         raise ValueError("Supply both x_motor and y_motor, or neither.")
     if x_motor is not None and (not x_motor or not y_motor or x_motor == y_motor):
@@ -162,9 +227,23 @@ def get_scan_positions(
         if not entries:
             return []
         titles = {name: _scalar_text(h5f[name], "title") for name in entries}
+        candidates = entries
+        if accepted_commands is not None:
+            entries = [
+                name
+                for name in entries
+                if _scan_command(titles[name]) in accepted_commands
+            ]
+        if not entries:
+            return []
         if x_motor is None:
-            for title in titles.values():
-                motors = _command_motors(title)
+            # Prefer selected 2D scan axes. Other entries contribute metadata
+            # only when a selected line/point needs a second spatial axis.
+            inference_order = entries + [
+                name for name in candidates if name not in entries
+            ]
+            for name in inference_order:
+                motors = _command_motors(titles[name])
                 if len(motors) == 2:
                     x_motor, y_motor = motors
                     break

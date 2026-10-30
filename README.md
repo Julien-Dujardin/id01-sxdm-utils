@@ -79,6 +79,26 @@ A minimal notebook matching this workflow is included:
 uv run --extra marimo marimo edit examples/display_scan_positions.py -- --dataset /path/to/dataset.h5
 ```
 
+## Select scan types
+
+Both marimo examples include an **all / sxdm / mesh / ascan** dropdown. The selected family filters the overview and the scan table/scan selector together. The notebooks infer one motor frame from the unfiltered file; the normalized notebook also keeps its reference bounds fixed, so changing the dropdown only changes which scans are shown. The same filter is available directly in your notebook:
+
+```python
+mo.ui.plotly(sxdm.io.bliss.display_scan_positions(path_dset, scan_type="sxdm"))
+mo.Html(sxdm.io.bliss.get_scan_table(path_dset, as_widget=False, scan_type="sxdm"))
+```
+
+| `scan_type` | Included commands |
+| --- | --- |
+| `"sxdm"` | `sxdm`, `asxdm`, `dsxdm`, `kmap` |
+| `"mesh"` | `mesh`, `amesh`, `dmesh` |
+| `"ascan"` | `ascan`, `dscan` |
+| `None` | All scan commands (default) |
+
+Combine families with `scan_type=["sxdm", "mesh"]`, or pass an exact alias such as `"asxdm"` to select only that command. Matching is case-insensitive and checks the command name exactly. An empty list selects no scans. Unknown selectors raise an error. `get_scan_map` and `get_scan_positions` accept the same keyword; `scan_nos` further restricts the result.
+
+Filtering happens before motor arrays are read. For line-only selections, axes can be inferred from other 2D scan titles within the chosen dataset/`scan_nos`; a file containing only lines still needs explicit X/Y motor names. A scan moving another motor (for example `eta`) appears as a stationary point in a `pix`/`piy` view when those sample motors stayed fixed. Set explicit axes to inspect another projection. Automatic normalization recomputes bounds from the filtered positions. Supply explicit `x_motor`, `y_motor` and fixed `motor_bounds` when comparing scan types in a stable coordinate frame.
+
 ## Spatial alternative to `get_scan_table`
 
 ```python

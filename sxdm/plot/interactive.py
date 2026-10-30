@@ -162,7 +162,7 @@ def _layout(fig, positions, title):
         yaxis_title=y_label,
         hovermode="closest",
         legend_title_text="Scan",
-        uirevision="sxdm-scan-map",
+        uirevision=f"sxdm-scan-map:{x_label}:{y_label}",
     )
     if positions and positions[0].x_unit == positions[0].y_unit:
         fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -175,6 +175,7 @@ def get_scan_map(
     x_motor=None,
     y_motor=None,
     scan_nos=None,
+    scan_type=None,
     max_points=5000,
     max_total_points=10000,
     title="Scan positions",
@@ -185,7 +186,10 @@ def get_scan_map(
     is a separate WebGL trace; click its legend entry to toggle it. The hover
     label includes the scan number, full command, start time and acquisition
     point index. Positions use native motor units, not requested command bounds.
-    See :func:`sxdm.io.scan_positions.get_scan_positions` for axis inference.
+    ``scan_type`` selects a family (``"sxdm"``, ``"mesh"``, ``"ascan"``)
+    or a sequence of types. None includes all scans. SXDM includes asxdm/dsxdm/
+    kmap, mesh includes amesh/dmesh, and ascan includes dscan. See
+    :func:`sxdm.io.scan_positions.get_scan_positions` for aliases and axis inference.
 
     ``max_points`` limits displayed positions per scan; ``max_total_points``
     limits positions across the entire figure, including gap separators. The
@@ -199,7 +203,11 @@ def get_scan_map(
     _sample_indexes(0, max_points)  # Validate even for an empty file.
     _validate_total_limit(max_total_points)
     positions = get_scan_positions(
-        path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
+        path_dset,
+        x_motor=x_motor,
+        y_motor=y_motor,
+        scan_nos=scan_nos,
+        scan_type=scan_type,
     )
     return _scan_figure(
         positions, max_points=max_points, max_total_points=max_total_points, title=title
@@ -274,6 +282,7 @@ def display_scan_positions(
     rectangle=(0, 1, 0, 1),
     motor_bounds=None,
     scan_nos=None,
+    scan_type=None,
     max_points=5000,
     max_total_points=10000,
     title="Scan positions on a normalized rectangle",
@@ -297,7 +306,10 @@ def display_scan_positions(
     axes independently and is not a physical coordinate-frame transformation.
     Only recorded positions are drawn; missing trajectories are not reconstructed
     from requested scan-command endpoints. See ``get_scan_positions`` for the
-    supported motor-channel layout and axis inference.
+    supported motor-channel layout and axis inference. ``scan_type`` accepts
+    a family (``"sxdm"``, ``"mesh"``, ``"ascan"``) or a sequence; None includes
+    all scans. Automatic motor bounds use only the filtered scans. Supply fixed
+    ``motor_bounds`` and explicit motor names to compare filters in one frame.
 
     ``max_total_points`` caps displayed positions (default 10,000 across all
     scans, including separators); ``max_points`` is an
@@ -310,7 +322,11 @@ def display_scan_positions(
     _sample_indexes(0, max_points)
     _validate_total_limit(max_total_points)
     positions = get_scan_positions(
-        path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
+        path_dset,
+        x_motor=x_motor,
+        y_motor=y_motor,
+        scan_nos=scan_nos,
+        scan_type=scan_type,
     )
     fig = _scan_figure(
         positions, max_points=max_points, max_total_points=max_total_points, title=title
@@ -376,6 +392,7 @@ def display_scan_positions(
     x_name = positions[0].x_motor if positions else x_motor
     y_name = positions[0].y_motor if positions else y_motor
     fig.update_layout(
+        uirevision=f"{fig.layout.uirevision}:normalized:{rectangle}:{motor_bounds}",
         xaxis_title=f"Mapped X ({x_name})" if x_name else "Mapped X",
         yaxis_title=f"Mapped Y ({y_name})" if y_name else "Mapped Y",
         meta={

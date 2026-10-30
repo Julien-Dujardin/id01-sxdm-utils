@@ -583,7 +583,7 @@ def _get_roi_pos_new(h5f, scan_no, detector=None):
     return roi_params
 
 
-def get_scan_table(path_dset, *, as_widget=True):
+def get_scan_table(path_dset, *, as_widget=True, scan_type=None):
     """Get an HTML table of scans contained within a BLISS dataset.
 
     Parameters
@@ -594,6 +594,10 @@ def get_scan_table(path_dset, *, as_widget=True):
     as_widget : bool, optional
         Keep the legacy ipywidgets return by default. Set False to get an HTML
         string suitable for ``mo.Html(get_scan_table(path, as_widget=False))``.
+
+    scan_type : str or sequence of str, optional
+        Filter by scan family (sxdm, mesh, ascan) or exact supported command.
+        None includes all scans. Sequences combine types.
 
     Returns
     -------
@@ -613,12 +617,20 @@ def get_scan_table(path_dset, *, as_widget=True):
     ]
 
     from html import escape
-    from .scan_positions import _scan_entries, _scalar_text
+    from .scan_positions import (
+        _scan_entries,
+        _scalar_text,
+        _scan_type_commands,
+        _scan_command,
+    )
 
+    commands = _scan_type_commands(scan_type)
     with h5py.File(path_dset, "r") as h5f:
         for scan_no in _scan_entries(h5f):
             scan = h5f[scan_no]
             title = _scalar_text(scan, "title")
+            if commands is not None and _scan_command(title) not in commands:
+                continue
             dtime = _scalar_text(scan, "start_time")
             if dtime:
                 try:
