@@ -47,6 +47,38 @@ uv run --extra marimo marimo edit examples/scan_browser.py -- \
     --dataset /path/to/dataset.h5 --x-motor samx --y-motor samy
 ```
 
+## Use a display function in your own marimo notebook
+
+A separate application is optional. Add this cell after defining `path_dset`:
+
+```python
+@app.cell
+def _(mo, path_dset, sxdm):
+    mo.ui.plotly(sxdm.io.bliss.display_scan_positions(
+        path_dset,
+        rectangle=(0, 1, 0, 1),  # display xmin, xmax, ymin, ymax
+    ))
+    return
+```
+
+`display_scan_positions` maps all selected scans onto the same normalized rectangle. The default native bounds come from the full acquired coordinate arrays before display sampling. One global transform preserves relative scan locations; individual scans are never independently stretched to fill the rectangle. Hover shows scan number/name, command, timestamp, original motor coordinates/units, and mapped coordinates. Axes are labeled as mapped coordinates because independent normalization changes physical aspect ratios.
+
+Use `rectangle=(0, 2, 0, 1)` for a wider reference rectangle. Pass `motor_bounds=(native_xmin, native_xmax, native_ymin, native_ymax)` to reuse an identical mapping when selecting subsets or comparing datasets. Points outside explicit bounds are extrapolated without clipping. An inferred constant axis is placed at the rectangle midpoint.
+
+`ascan`, `amesh`, and ID01 `asxdm` trajectories use recorded positions. As with `get_scan_map`, datasets containing only line/point scans need explicit `x_motor="...", y_motor="..."`. Requested command bounds are not substituted for missing measurements. See the [BLISS command cheat sheet](https://bliss.gitlab-pages.esrf.fr/bliss/2.0.x/img/cheat_sheet/cheat_sheet_fundamental.pdf) for standard `ascan`/`amesh` syntax.
+
+To retain the scan table in another cell without loading ipywidgets:
+
+```python
+mo.Html(sxdm.io.bliss.get_scan_table(path_dset, as_widget=False))
+```
+
+A minimal notebook matching this workflow is included:
+
+```bash
+uv run --extra marimo marimo edit examples/display_scan_positions.py -- --dataset /path/to/dataset.h5
+```
+
 ## Spatial alternative to `get_scan_table`
 
 ```python
@@ -111,7 +143,7 @@ marimo and uv behavior follow their [plotting](https://docs.marimo.io/guides/wor
 
 ## Legacy interfaces and ESRF integrations
 
-Existing `sxdm.widgets` interfaces and `get_scan_table()` remain **Jupyter-only optional features**. The marimo workflow replaces scan/counter browsing and detector-frame inspection; advanced widget interactions such as manual alignment and XSOCS fitting have not been ported to marimo. Computational functions remain usable from ordinary Python cells with their required dependencies.
+Existing `sxdm.widgets` interfaces remain **Jupyter-only optional features**. `get_scan_table()` defaults to its legacy Jupyter widget; `as_widget=False` returns plain HTML for marimo. The marimo workflow replaces scan/counter browsing and detector-frame inspection; advanced widget interactions such as manual alignment and XSOCS fitting have not been ported to marimo. Computational functions remain usable from ordinary Python cells with their required dependencies.
 
 SPEC geometry, XSOCS conversion, and some legacy widgets still need ESRF's `id01-core`/`xsocs`. These are intentionally outside the universal uv lock so GitLab availability and compiled legacy extensions cannot block installation of the modern core. If needed, install into an analysis/Jupyter environment with versions suitable for your beamline:
 

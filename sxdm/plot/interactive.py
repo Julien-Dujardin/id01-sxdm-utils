@@ -17,7 +17,7 @@ import numpy as np
 
 from ..io.scan_positions import get_scan_positions
 
-__all__ = ["get_scan_map", "get_counter_map"]
+__all__ = ["get_scan_map", "get_counter_map", "display_scan_positions"]
 
 
 def _plotly():
@@ -95,11 +95,15 @@ def get_scan_map(
     Set it to ``None`` to retain all points. Sampling affects display only, and
     is recorded in each trace's metadata. Nonfinite gaps break lines.
     """
-    go = _plotly()
     _sample_indexes(0, max_points)  # Validate even for an empty file.
     positions = get_scan_positions(
         path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
     )
+    return _scan_figure(positions, max_points=max_points, title=title)
+
+
+def _scan_figure(positions, *, max_points, title):
+    go = _plotly()
     fig = go.Figure()
     for scan in positions:
         indexes = _sample_indexes(scan.x.size, max_points)
@@ -143,6 +147,139 @@ def get_scan_map(
     if not positions:
         fig.add_annotation(text="No scans with usable positions", showarrow=False)
     return _layout(fig, positions, title)
+
+
+def _validate_bounds(bounds, name):
+    from numbers import Real
+
+    try:
+        values = tuple(bounds)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be (xmin, xmax, ymin, ymax).") from exc
+    if len(values) != 4 or any(
+        isinstance(v, bool) or not isinstance(v, Real) or not np.isfinite(v)
+        for v in values
+    ):
+        raise ValueError(f"{name} must contain four finite numeric bounds.")
+    xmin, xmax, ymin, ymax = map(float, values)
+    if xmin >= xmax or ymin >= ymax:
+        raise ValueError(f"{name} requires xmin < xmax and ymin < ymax.")
+    return xmin, xmax, ymin, ymax
+
+
+def display_scan_positions(
+    path_dset,
+    *,
+    x_motor=None,
+    y_motor=None,
+    rectangle=(0, 1, 0, 1),
+    motor_bounds=None,
+    scan_nos=None,
+    max_points=5000,
+    title="Scan positions on a normalized rectangle",
+):
+    """Return a marimo-compatible figure mapping scans onto one shared rectangle.
+
+    Use this directly as the final expression of a notebook cell, or wrap the
+    result in ``mo.ui.plotly``. No marimo or ipywidgets imports are required here.
+
+    ``rectangle=(xmin, xmax, ymin, ymax)`` defines display coordinates, defaulting
+    to a unit square. ``motor_bounds`` uses the same order in native motor units.
+    When omitted, native bounds are inferred from ALL finite acquired coordinate
+    pairs of the selected scans before display sampling. All scans use the SAME
+    affine transform; individual scans are never independently stretched to fit.
+    An inferred constant axis is centered in the rectangle. Explicit bounds must
+    have nonzero width and height; points outside them are shown without clipping.
+
+    Hover labels include scan number, command, timestamp, acquisition index,
+    original motor coordinates and mapped coordinates. To compare subsets with
+    the same mapping, reuse explicit ``motor_bounds``. Normalization rescales
+    axes independently and is not a physical coordinate-frame transformation.
+    Only recorded positions are drawn; missing trajectories are not reconstructed
+    from requested scan-command endpoints. See ``get_scan_positions`` for the
+    supported motor-channel layout and axis inference.
+    """
+    rectangle = _validate_bounds(rectangle, "rectangle")
+    if motor_bounds is not None:
+        motor_bounds = _validate_bounds(motor_bounds, "motor_bounds")
+    _sample_indexes(0, max_points)
+    positions = get_scan_positions(
+        path_dset, x_motor=x_motor, y_motor=y_motor, scan_nos=scan_nos
+    )
+    fig = _scan_figure(positions, max_points=max_points, title=title)
+    if positions and motor_bounds is None:
+        limits = []
+        for scan in positions:
+            valid = np.isfinite(scan.x) & np.isfinite(scan.y)
+            limits.append(
+                (
+                    scan.x[valid].min(),
+                    scan.x[valid].max(),
+                    scan.y[valid].min(),
+                    scan.y[valid].max(),
+                )
+            )
+        limits = np.asarray(limits)
+        motor_bounds = (
+            float(limits[:, 0].min()),
+            float(limits[:, 1].max()),
+            float(limits[:, 2].min()),
+            float(limits[:, 3].max()),
+        )
+
+    def mapped(values, axis):
+        lo, hi = motor_bounds[axis : axis + 2]
+        start, stop = rectangle[axis : axis + 2]
+        values = np.asarray(values, dtype=float)
+        if hi == lo:
+            return np.where(np.isfinite(values), (start + stop) / 2, np.nan)
+        return start + (values - lo) * ((stop - start) / (hi - lo))
+
+    for trace, scan in zip(fig.data, positions):
+        raw_x, raw_y = np.asarray(trace.x), np.asarray(trace.y)
+        trace.customdata = [
+            list(row) + [float(x), float(y)]
+            for row, x, y in zip(trace.customdata, raw_x, raw_y)
+        ]
+        trace.x, trace.y = mapped(raw_x, 0), mapped(raw_y, 2)
+        trace.hovertemplate = (
+            f"<b>Scan {escape(scan.scan_no)}</b><br>"
+            + escape(scan.title)
+            + "<br>"
+            + escape(scan.start_time)
+            + "<br>Point %{customdata[3]}"
+            + f"<br>{escape(_label(scan.x_motor, scan.x_unit))}: %{{customdata[4]}}"
+            + f"<br>{escape(_label(scan.y_motor, scan.y_unit))}: %{{customdata[5]}}"
+            + "<br>Mapped X: %{x}<br>Mapped Y: %{y}<extra></extra>"
+        )
+    xmin, xmax, ymin, ymax = rectangle
+    fig.add_shape(
+        type="rect",
+        x0=xmin,
+        x1=xmax,
+        y0=ymin,
+        y1=ymax,
+        xref="x",
+        yref="y",
+        layer="below",
+        line={"color": "#64748b", "width": 2},
+        fillcolor="rgba(148, 163, 184, 0.08)",
+    )
+    x_name = positions[0].x_motor if positions else x_motor
+    y_name = positions[0].y_motor if positions else y_motor
+    fig.update_layout(
+        xaxis_title=f"Mapped X ({x_name})" if x_name else "Mapped X",
+        yaxis_title=f"Mapped Y ({y_name})" if y_name else "Mapped Y",
+        meta={
+            "coordinate_system": "normalized",
+            "rectangle": rectangle,
+            "motor_bounds": motor_bounds,
+            "x_motor": x_name,
+            "y_motor": y_name,
+        },
+    )
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    return fig
 
 
 def get_counter_map(

@@ -52,6 +52,47 @@ def test_mesh_line_and_point_sorted_measured_only(scans):
     assert result[0].title.startswith("sxdm(")
 
 
+@pytest.mark.parametrize("command", ["amesh", "asxdm", "dsxdm"])
+def test_mesh_aliases_infer_axes_without_reconstructing_requested_bounds(
+    tmp_path, command
+):
+    path = tmp_path / "aliases.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(
+            f,
+            "1.1",
+            f"{command}(piy, 0, 100, 10, piz, 0, 200, 10, 0.1)",
+            [1, 2, 3],
+            [4, 4, 5],
+        )
+    scan = get_scan_positions(path)[0]
+    assert (scan.x_motor, scan.y_motor) == ("piy", "piz")
+    np.testing.assert_array_equal(scan.x, [1, 2, 3])
+    np.testing.assert_array_equal(scan.y, [4, 4, 5])
+
+
+@pytest.mark.parametrize("command", ["amesh", "asxdm", "dsxdm"])
+def test_aliases_do_not_broadcast_a_moving_motor_snapshot(tmp_path, command):
+    path = tmp_path / "alias-snapshots.h5"
+    with h5py.File(path, "w") as f:
+        add_scan(
+            f, "1.1", f"{command} piy 0 100 10 piz 0 200 10 0.1", [1, 2, 3], static_y=4
+        )
+    with pytest.warns(UserWarning, match="static snapshot"):
+        assert get_scan_positions(path) == []
+
+
+def test_nonspatial_scan_is_a_point_in_selected_motor_axes(tmp_path):
+    path = tmp_path / "point.h5"
+    with h5py.File(path, "w") as f:
+        scan = add_scan(f, "1.1", "ct 0.1", static_y=4)
+        scan["instrument/positioners/piy"] = 3
+    positions = get_scan_positions(path, x_motor="piy", y_motor="piz")
+    assert len(positions) == 1
+    np.testing.assert_array_equal(positions[0].x, [3])
+    np.testing.assert_array_equal(positions[0].y, [4])
+
+
 def test_explicit_axes_and_scan_selection(scans):
     result = get_scan_positions(scans, scan_nos="2.1", x_motor="piy", y_motor="piz")
     assert len(result) == 1

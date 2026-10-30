@@ -13,6 +13,7 @@ _EXPORTS = {
     "gif_sxdm_sums": ("utils", "gif_sxdm_sums"),
     "gif_sxdm": ("utils", "gif_sxdm"),
     "get_scan_map": ("interactive", "get_scan_map"),
+    "display_scan_positions": ("interactive", "display_scan_positions"),
     "get_counter_map": ("interactive", "get_counter_map"),
 }
 __all__ = list(_MODULES) + list(_EXPORTS)

@@ -29,6 +29,13 @@ def get_scan_map(path_dset, **kwargs):
     return plot_scans(path_dset, **kwargs)
 
 
+def display_scan_positions(path_dset, **kwargs):
+    """Map scans onto a normalized rectangle; see sxdm.plot.display_scan_positions."""
+    from ..plot.interactive import display_scan_positions as display
+
+    return display(path_dset, **kwargs)
+
+
 @ioh5
 def get_sxdm_scan_numbers(h5f, interrupted_scans=False):
     """
@@ -576,7 +583,7 @@ def _get_roi_pos_new(h5f, scan_no, detector=None):
     return roi_params
 
 
-def get_scan_table(path_dset):
+def get_scan_table(path_dset, *, as_widget=True):
     """Get an HTML table of scans contained within a BLISS dataset.
 
     Parameters
@@ -584,10 +591,14 @@ def get_scan_table(path_dset):
     path_dset : str
         Path to the .hdf5 BLISS dataset.
 
+    as_widget : bool, optional
+        Keep the legacy ipywidgets return by default. Set False to get an HTML
+        string suitable for ``mo.Html(get_scan_table(path, as_widget=False))``.
+
     Returns
     -------
-    ipywidgets.HTML
-        Scan table.
+    ipywidgets.HTML or str
+        Scan table, with escaped metadata.
     """
 
     table = [
@@ -601,24 +612,33 @@ def get_scan_table(path_dset):
         "    </tr>",
     ]
 
+    from html import escape
+    from .scan_positions import _scan_entries, _scalar_text
+
     with h5py.File(path_dset, "r") as h5f:
-        for s in sorted(h5f.keys(), key=lambda s: int(s.split(".")[0])):
-            title = h5f[f"{s}/title"][()].decode()
-
-            dtime = h5f[f"{s}/start_time"][()].decode()
-            dtime = datetime.fromisoformat(dtime).strftime("%b %d | %H:%M:%S")
-
-            row = [
-                "    <tr>",
-                f"      <th>{s}</th>",
-                f"      <td>{title}</td>",
-                f"      <td>{dtime}</td>",
-                "    </tr>",
-            ]
-            _ = [table.append(x) for x in row]
+        for scan_no in _scan_entries(h5f):
+            scan = h5f[scan_no]
+            title = _scalar_text(scan, "title")
+            dtime = _scalar_text(scan, "start_time")
+            if dtime:
+                try:
+                    dtime = datetime.fromisoformat(dtime).strftime("%b %d | %H:%M:%S")
+                except ValueError:
+                    pass  # Show non-ISO timestamps verbatim instead of hiding a scan.
+            table.extend(
+                [
+                    "    <tr>",
+                    f"      <th>{escape(scan_no)}</th>",
+                    f"      <td>{escape(title)}</td>",
+                    f"      <td>{escape(dtime)}</td>",
+                    "    </tr>",
+                ]
+            )
 
     table += ["  </tbody>", "</table>", "</div>"]
     table = "\n".join(table)
+    if not as_widget:
+        return table
 
     try:
         from ipywidgets import HTML

@@ -74,7 +74,10 @@ def _command_motors(title):
     if not tokens:
         return ()
     command = tokens[0].lower()
-    if command in {"sxdm", "mesh", "dmesh", "kmap"} and len(tokens) >= 9:
+    if (
+        command in {"sxdm", "asxdm", "dsxdm", "mesh", "amesh", "dmesh", "kmap"}
+        and len(tokens) >= 9
+    ):
         return tokens[1], tokens[5]
     if command in {"ascan", "dscan", "a2scan", "d2scan", "a3scan", "d3scan"}:
         count = int(command[1]) if command[1].isdigit() else 1
@@ -120,9 +123,11 @@ def get_scan_positions(
     """Read acquired 2D trajectories for scans in a BLISS master HDF5 file.
 
     Both axes must describe the same motors for every scan. If omitted, they are
-    inferred from the first recognized 2D scan title. For files containing only
-    line or point scans, supply ``x_motor`` and ``y_motor`` explicitly. Motor
-    channels are sought in ``measurement`` and ``instrument/positioners``.
+    inferred from the first recognized 2D scan title (``mesh``, ``amesh``,
+    ``dmesh``, ``sxdm``, ``asxdm``, ``dsxdm``, ``kmap``, or two-motor scans).
+    For files containing only line or point scans, supply ``x_motor`` and
+    ``y_motor`` explicitly. Motor channels are sought in ``measurement`` and
+    ``instrument/positioners``.
 
     Scalar stationary motor snapshots are broadcast over acquired coordinates
     of the other motor. A moving motor with only an initial snapshot is skipped,

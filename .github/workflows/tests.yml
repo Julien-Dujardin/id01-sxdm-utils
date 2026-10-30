@@ -23,9 +23,10 @@ jobs:
       - run: uv sync --locked --extra marimo --extra analysis --extra jupyter
       - run: uv run --no-sync ruff check sxdm tests examples
       - run: uv run --no-sync pytest -q
-      - run: uv run --no-sync marimo check examples/scan_browser.py
+      - run: uv run --no-sync marimo check examples/scan_browser.py examples/display_scan_positions.py
       - run: uv run --no-sync python examples/create_demo.py /tmp/sxdm-demo.h5
       - run: uv run --no-sync marimo export html examples/scan_browser.py -o /tmp/browser.html -- --dataset /tmp/sxdm-demo.h5
+      - run: uv run --no-sync marimo export html examples/display_scan_positions.py -o /tmp/positions.html -- --dataset /tmp/sxdm-demo.h5
       - run: uv build
   core:
     runs-on: ubuntu-latest
