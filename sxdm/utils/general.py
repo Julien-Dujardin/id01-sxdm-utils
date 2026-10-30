@@ -151,7 +151,10 @@ def get_shift_dset(
     # raw ROIs
     sxdm_raw = [get_roidata(path_dset, i, roi) for i in scan_nums]
     if log:
-        sxdm_raw = [np.log(map, where=(map > 0)) for map in sxdm_raw]
+        sxdm_raw = [
+            np.log(map, out=np.zeros_like(map, dtype=float), where=(map > 0))
+            for map in sxdm_raw
+        ]
 
     # shifts
     shifts = get_shift(sxdm_raw, med_filt=med_filt, **xcorr_kwargs)

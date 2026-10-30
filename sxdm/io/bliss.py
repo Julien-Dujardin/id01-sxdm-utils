@@ -274,7 +274,7 @@ def get_sxdm_frame_sum(
         Number of the SXDM scan, e.g. 4.1.
     mask_sample : np.ndarray, optional
         Array of the same shape as the SXDM scan whose True values indicate
-        where to perform the frame sum, by default None (all the scanned area is
+        where to exclude frames from the sum, by default None (all the scanned area is
         considered in the computation)
     detector : str, optional
         The detector used for the SXDM scan, by default None
@@ -355,7 +355,7 @@ def get_sxdm_frame_sum(
         return np.stack(frame_sum_list).sum(0)
 
 
-def _calc_pos_sum_chunk(path_dset, path_in_h5, roi_rec_sl, idx_range):
+def _calc_pos_sum_chunk(path_dset, path_in_h5, roi_rec_sl, idx_range, mask_detector=None):
     """
     Calculate the direct space intensity of a 4D SXDM dataset:
     * for the direct space indexes in the range `idx_range`;
@@ -368,7 +368,10 @@ def _calc_pos_sum_chunk(path_dset, path_in_h5, roi_rec_sl, idx_range):
 
     roi_slice = (slice(i0, i1, None), *roi_rec_sl)  # 3D
     with h5py.File(path_dset, "r") as h5f:
-        arr = h5f[path_in_h5][roi_slice].sum(axis=(1, 2))
+        frames = h5f[path_in_h5][roi_slice]
+        if mask_detector is not None:
+            frames = np.where(mask_detector[roi_rec_sl], 0, frames)
+        arr = frames.sum(axis=(1, 2))
 
     return arr
 
@@ -393,7 +396,7 @@ def get_sxdm_pos_sum(
         Number of the SXDM scan, e.g. 4.1.
     mask_detector : np.ndarray, optional
         Array of the same shape as a detector frame whose True values indicate where
-        to perform the sum, by default None (the full detector area is considered for
+        to exclude from the sum, by default None (the full detector area is considered for
         the computation)
     detector : str, optional
         Alias of the detector used for the SXDM scan, by default None
@@ -435,13 +438,20 @@ def get_sxdm_pos_sum(
     # recipocal space slice from mask
     if mask_detector is not None:
         roi_rec = np.where(np.invert(mask_detector.astype("bool")))
-        roi_rec_sl = tuple([slice(x.min(), x.max() + 1) for x in roi_rec])
+        mask_detector = np.asarray(mask_detector, dtype=bool)
+        if roi_rec[0].size:
+            roi_rec_sl = tuple(slice(x.min(), x.max() + 1) for x in roi_rec)
+        else:
+            roi_rec_sl = np.s_[0:0, 0:0]
     else:
         roi_rec_sl = np.s_[:, :]
 
     # call function with everything except the index ranges
     # the function returns a direct space map
-    pfun = partial(_calc_pos_sum_chunk, path_dset, path_data_h5, roi_rec_sl)
+    pfun = partial(
+        _calc_pos_sum_chunk, path_dset, path_data_h5, roi_rec_sl,
+        mask_detector=mask_detector,
+    )
 
     # set progress bar
     if pbar is True:
@@ -588,16 +598,19 @@ def get_sxdm_frame_sum_multi(
             f"Detector {detector} not in data file. Available detectors are: {detlist}."
         )
     else:
-        path_data_h5 = path_data_h5.format(scan_no=scan_nums[0], detector=detector)
+        first_data_path = path_data_h5.format(scan_no=scan_nums[0], detector=detector)
 
     with h5py.File(path_dset) as h5f:
-        frame_shape = h5f[path_data_h5].shape[1:3]
+        frame_shape = h5f[first_data_path].shape[1:3]
 
     # if no fname specified or if fname does not exist
     if path_save_framesum is None or not os.path.isfile(path_save_framesum):
         fint_tot = np.zeros((*frame_shape, len(scan_nums)))
         for i, scan_no in tqdm(enumerate(scan_nums), total=len(scan_nums)):
-            fint_tot[..., i] = get_sxdm_frame_sum(path_dset, scan_no, pbar=False)
+            fint_tot[..., i] = get_sxdm_frame_sum(
+                path_dset, scan_no, detector=detector,
+                path_data_h5=path_data_h5, pbar=False,
+            )
         fint_tot = fint_tot.transpose(2, 0, 1)
         # if fname
         if path_save_framesum is not None:
