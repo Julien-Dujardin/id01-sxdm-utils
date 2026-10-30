@@ -10,6 +10,16 @@ SAMPLE_DATASET = os.path.join(
     "doc/source/examples/data/MA1234/id01/20230710/RAW_DATA/InGaN/InGaN_0001/InGaN_0001.h5"
 )
 
+if not os.path.isfile(SAMPLE_DATASET):
+    pytest.skip(
+        "External ESRF InGaN example dataset is unavailable", allow_module_level=True
+    )
+
+pytest.importorskip(
+    "matplotlib", reason="GIF integration tests require the analysis extra"
+)
+pytest.importorskip("gif", reason="GIF integration tests require the analysis extra")
+
 
 class TestGifSxdm:
     """Tests for the gif_sxdm function."""

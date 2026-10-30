@@ -6,14 +6,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import matplotlib as mpl
-import gif
 import os
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from matplotlib.patches import FancyArrowPatch, Rectangle, ArrowStyle
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 from ..io.bliss import (
     get_piezo_motor_names,
@@ -445,6 +444,8 @@ def gif_sxdm_sums(
     else:
         det = detector
 
+    import gif
+
     @gif.frame
     def plot_sxdm_sums(scan_no):
         fint = get_sxdm_frame_sum(path_dset, scan_no, detector=det, pbar=False)
@@ -569,6 +570,8 @@ def gif_sxdm(
         det = get_detector_aliases(path_dset, scan_nos[0])[0]
     else:
         det = detector
+
+    import gif
 
     @gif.frame
     def plot_sxdm_sums(scan_no):

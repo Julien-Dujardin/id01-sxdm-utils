@@ -1,0 +1,40 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    env:
+      MPLBACKEND: Agg
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --extra marimo --extra analysis --extra jupyter
+      - run: uv run --no-sync ruff check sxdm tests examples
+      - run: uv run --no-sync pytest -q
+      - run: uv run --no-sync marimo check examples/scan_browser.py examples/display_scan_positions.py
+      - run: uv run --no-sync python examples/create_demo.py /tmp/sxdm-demo.h5
+      - run: uv run --no-sync marimo export html examples/scan_browser.py -o /tmp/browser.html -- --dataset /tmp/sxdm-demo.h5
+      - run: uv run --no-sync marimo export html examples/display_scan_positions.py -o /tmp/positions.html -- --dataset /tmp/sxdm-demo.h5
+      - run: uv build
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          python-version: '3.14'
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -q

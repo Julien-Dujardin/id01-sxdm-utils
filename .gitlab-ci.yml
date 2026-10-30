@@ -23,13 +23,12 @@ cache:
 # Job templates  #
 ##################
 
-# Poetry installation script
-.poetry-install: &poetry-install
-  image: python:3.11-bullseye
+# uv installation script
+.uv-install: &uv-install
+  image: python:3.14-bookworm
   before_script:
-    - pip install poetry
-    - poetry config virtualenvs.in-project true
-    - poetry install -v --with dev
+    - pip install uv==0.13.5
+    - uv sync --locked --extra marimo --extra analysis --extra jupyter --group docs
 
 # Pandoc installation script
 .pandoc-install: &pandoc-install |
@@ -65,11 +64,10 @@ stages:
 ############
 
 lint:
-  <<: *poetry-install
+  <<: *uv-install
   stage: verify
   script:
-    - poetry run pre-commit install
-    - poetry run pre-commit run --all-files
+    - uv run --no-sync ruff check sxdm tests examples
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -80,12 +78,11 @@ lint:
 
 # Build docs
 doc:
-  <<: [*poetry-install, *doc-rules]
+  <<: [*uv-install, *doc-rules]
   stage: build
   script:
     - *pandoc-install
-    - cd doc
-    - poetry run make html
+    - uv run --no-sync sphinx-build -D nb_execution_mode=off -b html doc/source doc/build/html
   artifacts:
     paths:
       - doc/build/
@@ -97,19 +94,10 @@ doc:
 #########
 
 test:
-  <<: *poetry-install
+  <<: *uv-install
   stage: test
-  parallel: 2  # Run tests in parallel
   script:
-    # Split tests across parallel jobs
-    - |
-      if [[ $CI_NODE_INDEX == 1 ]]; then
-        # Run package-level and plot tests
-        poetry run pytest tests/test_sxdm.py tests/plot/ --junitxml=tests/report1.xml
-      else
-        # Run xsocs tests
-        poetry run pytest tests/test_xsocs.py --junitxml=tests/report2.xml
-      fi
+    - uv run --no-sync pytest tests/ --junitxml=tests/report.xml
   artifacts:
     when: always
     reports:
@@ -136,20 +124,4 @@ pages:
   needs:
     - doc
 
-# Package publishing (commented out for future use)
-# publish-package:
-#   <<: *poetry-install
-#   stage: deploy
-#   script:
-#     - poetry config repositories.gitlab "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi"
-#     - poetry config http-basic.gitlab gitlab-ci-token $CI_JOB_TOKEN
-#     - poetry build
-#     - poetry publish -r gitlab
-#   rules:
-#     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-#   needs:
-#     - pages
-#   artifacts:
-#     paths:
-#       - dist/*.whl
-#       - dist/*.tar.gz
+# Package builds are verified locally and by the GitHub Actions Python matrix.

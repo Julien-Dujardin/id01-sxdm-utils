@@ -1,12 +1,14 @@
 from types import SimpleNamespace
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from sxdm.widgets.Inspect4DArray import Inspect4DArray
-from sxdm.widgets.bliss.GetShift import GetShift, GetShiftCustom
+pytest.importorskip("ipywidgets", reason="Legacy widget tests need the jupyter extra")
+plt = pytest.importorskip("matplotlib.pyplot", reason="Legacy widgets need matplotlib")
+
+from sxdm.widgets.Inspect4DArray import Inspect4DArray  # noqa: E402
+from sxdm.widgets.bliss.GetShift import GetShift, GetShiftCustom  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

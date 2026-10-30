@@ -3,18 +3,13 @@ Various functions to aid the analysis of SXDM data.
 """
 
 import numpy as np
-import pandas as pd
 import os
-import xrayutilities as xu
 
-from skimage import registration
 from scipy.ndimage import median_filter, shift
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
-from ..io.spec import FastSpecFile
 from ..io.bliss import ioh5, get_roidata
 
-from id01lib.xrd.geometries import ID01psic
 
 
 @ioh5
@@ -26,6 +21,9 @@ def get_filelist(sample_dir):
     """
     SPEC.
     """
+    import pandas as pd
+    from ..io.spec import FastSpecFile
+
     data = {"path": [], "filename": [], "nscans": []}
 
     for root, _, files in os.walk(sample_dir):
@@ -201,6 +199,8 @@ def get_shift(images, med_filt=None, **xcorr_kwargs):
             p, n = [median_filter(s, med_filt) for s in (images[i - 1], images[i])]
         else:
             p, n = [s for s in (images[i - 1], images[i])]
+        from skimage import registration
+
         sh, _, _ = registration.phase_cross_correlation(p, n, **xcorr_kwargs)
         shifts.append(sh + shifts[i - 1])
     shifts = np.array(shifts)  # col0: y shifts. col1: x shifts
@@ -251,6 +251,9 @@ def calc_refl_id01(
         CIF file, if ip_dir or oop_dir is not a list or array of length 3,
         or if the reflection hkl is not a list or array of length 3.
     """
+
+    import xrayutilities as xu
+    from id01lib.xrd.geometries import ID01psic
 
     # check material is xu.materials instance or CIF file
     if not isinstance(material, xu.materials.material.Crystal):
